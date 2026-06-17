@@ -361,26 +361,35 @@ def set_stop_result(rid, stop_id):
         return jsonify({"error": "Остановка не принадлежит этому маршруту"}), 400
     if r.status != "in_progress":
         return jsonify({"error": "Маршрут не активен"}), 400
-    if stop.stop_type != "delivery":
-        return jsonify({"error": "Эта остановка не является доставкой"}), 400
 
     data   = request.get_json(silent=True) or {}
     result = data.get("result")
-    if result not in ("success", "failure"):
-        return jsonify({"error": "result должен быть 'success' или 'failure'"}), 400
+
+    is_warehouse = stop.stop_type == "warehouse"
+
+    if is_warehouse:
+        if result != "visited":
+            return jsonify({"error": "Для складской остановки result должен быть 'visited'"}), 400
+    else:
+        if result not in ("success", "failure"):
+            return jsonify({"error": "result должен быть 'success' или 'failure'"}), 400
+        if stop.order_id:
+            order = db.session.get(Order, stop.order_id)
+            if order:
+                order.status = "completed" if result == "success" else "failed"
 
     stop.delivery_result = result
-    if stop.order_id:
-        order = db.session.get(Order, stop.order_id)
-        if order:
-            order.status = "completed" if result == "success" else "failed"
 
-    delivery_stops = [s for s in r.stops if s.stop_type == "delivery"]
-    all_marked     = all(s.delivery_result is not None for s in delivery_stops)
-    if all_marked and delivery_stops:
-        r.status = ("completed"
-                    if all(s.delivery_result == "success" for s in delivery_stops)
-                    else "requires_intervention")
+    # Route completes when ALL stops are marked (warehouse + delivery)
+    all_marked = all(s.delivery_result is not None for s in r.stops)
+    if all_marked:
+        delivery_stops = [s for s in r.stops if s.stop_type == "delivery"]
+        if delivery_stops:
+            r.status = ("completed"
+                        if all(s.delivery_result == "success" for s in delivery_stops)
+                        else "requires_intervention")
+        else:
+            r.status = "completed"
 
     db.session.commit()
     return jsonify(r.to_dict())
